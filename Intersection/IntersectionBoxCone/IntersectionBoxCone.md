@@ -266,6 +266,7 @@ h-distance 最大的点一定在这个被裁剪的多面体的面(边)上
 _? 特别说明 relevant linear component 是为了强调 h<sub>min</sub> h<sub>max</sub> 吗_  
 _?? 为什么强调轴线和 box 不相交, 不是应该一定在面上吗, 为了排除端点在 polyhedron 内部的情况吗_  
 _?? face 跟 edge 还是差很多的, 咋就一样了_  
+_?? 一定在 edge 上, 为什么后面还要处理face_  
 
 > A straightforward approach to finding the maximizer is to clip the box against the slab planes.  
 This requires some data structures and graph algorithms to compute the convex polyhedron of intersection.  
@@ -305,6 +306,8 @@ _之内的情况暂时不考虑 h<sub>min</sub> plane_
 
 ![The 81 possible sign configurations for a box face.png](Image/The 81 possible sign configurations for a box face.png)
 
+_?? 为什么要考虑 box face 的情况_  
+
 i = c + 9r  
 每个 entry 有四个符号, s<sub>0</sub>s<sub>1</sub>s<sub>2</sub>s<sub>3</sub>, 对应面的四个顶点 v<sub>0</sub>v<sub>1</sub>v<sub>2</sub>v<sub>3</sub>  
 v<sub>0</sub>在左下角, 逆时针排序  
@@ -343,13 +346,179 @@ and the (potential) 12 edge-interior points obtained by intersection with the h<
 其中 8 个表示 box 的顶点, 12 表示 h<sub>min</sub> 产生的边的端点, 12 个表示 h<sub>max</sub> 产生的边的端点  
 
 _box 有12条边, 每条边要么整个作为候选边, 要么被切成的子边作为候选边, 最终还是12个_  
-_? 两个 slab 面的情况分开放的话, 实际的 sub-edge 可能还要花点心思组合起来_  
+_两个 slab 面不是真的分开处理了, 对一个点, 会同时根据相对这两个面的 h 值决定 sub-edge 是什么_  
 
 > For a single edge, we determine whether or not it is intersected by 1 plane, 2 plane or neither plane,  
 sorting any points of intersection in the pre-allocated array.   
 Simple constant arrays can be stored  
 to associate edge-interior point indices with the appropriate edges  
 and to associate edges with the appropriate faces.  
+
+```c#
+/// 计算 Box 的边 和 Cone 的 hmin hmax 面的交点  (边的范围内)
+public static void ComputeCandidatesOnBoxEdgesNonAlloc(
+    MathCone cone,
+    MathBox box,
+    // 外部传入的容器, 大小32. 前8个是Box的顶点 -  cone 的顶点, 之后12个是 min plane 和 12条边的交点, 最后12个是 max plane 和 12条边的交点  
+    Vector3[] vertices, 
+    // 外部传入的容器, 大小8. 对应下顶点的 signed-distance. 为负时表示对应的点在 slab 之内  
+    float[] minPH,
+    // 外部传入的容器, 大小8. 对应上顶点的 signed-distance. 为负时表示对应的点在 slab 之内  
+    float[] maxPH,
+    MathEdge[] candidates,
+    out int numCandidates)
+{
+    
+    const int numBoxVertices = 8;
+    const int numBoxEdges = 12;
+    
+    // 填入 box 顶点
+    box.GetVertices(vertices, 0);
+    for (var i = 0; i < numBoxVertices; i++)
+    {
+        // 计算为 P - V, 同时也是相对 V 的相对位置
+        vertices[i] = vertices[i] - cone.position;
+        var h = Vector3.Dot(cone.direction, vertices[i]);
+        
+        // 计算 signed-distance h. 通过 h 来确定边被平面切割的情况
+        minPH[i] = cone.hMin - h;
+        maxPH[i] = h - cone.hMax;
+    }
+
+    // min plane 和边的交点起始 index
+    var v0 = 8;
+    // max plane 和边的交点起始 index  
+    var v1 = 20;
+    numCandidates = 0;
+    
+    for (var i = 0; i < numBoxEdges; i++, v0++, v1++)
+    {
+        var index0 = MathBox.edges[i].index0;
+        var index1 = MathBox.edges[i].index1;
+        
+        var p0 = vertices[index0];
+        var p1 = vertices[index1];
+        
+        // 处理 min plane 和 edge 相交
+        // hmin 平面可能和每条边相切, 如果相切把切点记录到 vertices 里, 之后产生的 sub-edge 会引用这些点  
+        var minP0H = minPH[index0];
+        var minP1H = minPH[index1];
+        
+        var clipMin = (minP0H > 0 && minP1H < 0) || (minP0H < 0 && minP1H > 0);
+        if (clipMin)
+        {
+            // 这里用了坐标相减代替了距离, 避免了分情况考虑符号
+            vertices[v0] = ( p0 * minP1H - p1 * minP0H )  / (minP1H - minP0H);
+        }
+        
+        // 处理 max plane 和 edge 相交
+        var maxP0H = maxPH[index0];
+        var maxP1H = maxPH[index1];
+        
+        var clipMax = (maxP0H > 0 && maxP1H < 0) || (maxP0H < 0 && maxP1H > 0);
+        if (clipMax)
+        {
+            vertices[v1] = ( p0 * maxP1H - p1 * maxP0H )  / (maxP1H - maxP0H);
+        }
+
+        if (clipMin)
+        {
+            if (clipMax)
+            {
+                // 两个面都把原边截了, 把截的新边丢进去
+                candidates[numCandidates++] = new MathEdge(v0, v1);
+            }
+            else
+            {
+                // min 面截了, 把 min 面的节点 和 在 slab 里的另一个边端顶点丢进去
+                candidates[numCandidates++] = new MathEdge(v0, minP0H < 0 ? index0 : index1);
+            }
+        }
+        else if (clipMax)
+        {
+            // max 面截了, 把 max 面的节点 和 在 slab 里的另一个边端顶点丢进去
+            candidates[numCandidates++] = new MathEdge(v1, maxP0H < 0 ? index0 : index1);
+        }
+        else
+        {
+            // segment 在 slab 中间的情况
+            if (minP0H <= 0 && minP1H <= 0 && maxP0H <= 0 && maxP1H <= 0)
+            {
+                candidates[numCandidates++] = MathBox.edges[i];
+            }
+        }
+    }
+}
+```
+
+> Now the box faces must be processed to find edges on the face that are candidates to contain the maximizer.  
+The table lookup is based on Figure 5.  
+An array of 81 function pointers are stored, one per table entry.  
+Many of the functions have empty bodies because no edges are added for a face.  
+If a box edge has an edge-interior point of intersections with the plane,  
+the function determines the sub-edge that is a candidate for containment of the maximizer  
+and then inserts the edge into the candidates array.  
+
+_??_  
+
+> The invalid configurations have functions that include sub-edges of the box edges regardless of the signs at the vertices.  
+The idea is that when an invalid configuration occurs,  
+we assume that the entire face is nearly parallel to the plane,  
+in which case all edges of the face are candidates.  
+
+_??_  
+
+> The `Face` type stores the 4 vertex indices for the points forming the face.  
+It also stores the 4 indices into the edges[12] array for the box edges that bound the face.  
+
+_Face 类有四个顶点的 index, 四个边的 index. 都是原始 box 的东西_  
+
+Each configuration function uses face.v indices and face.e indices to determine the edge pairs that are inserted into candidates array.  
+_?? edge pairs 是什么, 边为什么有 '双' 的概念, 有用的边概念应该是一个或者四个._  
+_?? determine the edge pairs 之后干了啥_  
+
+</details>
+
+
+
+#### Searching the Sub-edges for the Dot-Product Maximizer  
+
+<details>
+<summary>Searching the Sub-edges for the Dot-Product Maximizer</summary>
+
+> Once the array of candidates edges is computed, we can search those edges for a point that maximizes  
+__F__(__P__) = __D__ · __P__/|__P__| - cos(θ)  
+Note that when the search becomes active, the edges (edge endpoints) __X__ have been translated by the cone vertex.  
+During the processing of the edges, if a maximum of __F__ on an edge is positive,  
+we know the box intersects the cone in a region of positive volume.  
+The search terminates, because we do not actually care about the actual maximum - only that we found a box point inside the cone.  
+
+f 值表示点在锥体内的程度, 在锥体外是负值, 在锥面上是0, 在锥轴线上是 1 - cos(θ)  
+如果 f 值大于0, 点在锥体内, box 和 cone 相交  
+
+_?? 既然只关心点, 那为什么要考虑面和边呢_  
+
+> For a single candidates edge with end points __P__<sub>0</sub> and __P__<sub>1</sub>,  
+we first test whether __F__(__P__<sub>0</sub>) > 0  or __F__(__P__<sub>1</sub>) > 0.  
+If one of these conditions is true, the edge endpoint is inside the cone, the box and cone intersect.  
+
+如果一条边的两个点有一个的锥内值 __F__(__P__) 大于0, 说明这个这条边和 cone 相交  
+
+_?? 点在锥面上应该也表示相交, 为什么没算_  
+
+> If both endpoints are outside or on the cone (__F__ ≤  for both endpoints),  
+we can search for an interior local maximum of 的 Φ(t) = __F__(__P__<sub>0</sub> + t(__P__<sub>1</sub> - __P__<sub>0</sub>)).  
+Define __E__ = __P__<sub>1</sub> - __P__<sub>0</sub>.  
+The local maxima occur when  
+Ф'(t) = (__P__<sub>0</sub> × __D__ · __P__<sub>0</sub> × __E__) + t(__P__<sub>1</sub> × __D__ · __P__<sub>0</sub> × __E__) / |__P__<sub>0</sub> + t __E__|<sup>3</sup> = 0  
+
+如果两个点都在锥面上或者锥面之外, 需要在线段上找到一个 f 值最大的点  
+
+_? _
+
+> The numerator is a linear function of t,  
+so the local maximum is unique if it exists.  
+The local maximum exists when Ф'(0) > 0 and Ф'(1) < 0.  
 
 </details>
 
@@ -358,54 +527,11 @@ and to associate edges with the appropriate faces.
 
 [geometrictools]:https://www.geometrictools.com/  
 [IntersectionLineBox]:https://www.geometrictools.com/Documentation/IntersectionLineBox.pdf  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 [intersections]:http://www.realtimerendering.com/intersections.html  
 [IntersectionBoxCone]:https://www.geometrictools.com/Documentation/IntersectionBoxCone.pdf  
 [IntersectionLineBox]:https://www.geometrictools.com/Documentation/IntersectionLineBox.pdf  
+[GamePhysicsCookbook]:https://github.com/gszauer/GamePhysicsCookbook  
+[gamephysicscookbook]:https://gamephysicscookbook.com/  
+[Documentation]:https://www.geometrictools.com/Documentation/Documentation.html  
+[Intersections of Lines, Segments and Planes (2D and 3D)]:https://web.archive.org/web/20110716101931/http://www.softsurfer.com/Archive/algorithm_0104/algorithm_0104B.htm  
+[DistanceBox3Cone3]:https://www.geometrictools.com/Documentation/DistanceBox3Cone3.pdf  
