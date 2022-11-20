@@ -532,6 +532,6 @@ The local maximum exists when Ф'(0) > 0 and Ф'(1) < 0.
 [IntersectionLineBox]:https://www.geometrictools.com/Documentation/IntersectionLineBox.pdf  
 [GamePhysicsCookbook]:https://github.com/gszauer/GamePhysicsCookbook  
 [gamephysicscookbook]:https://gamephysicscookbook.com/  
-[Documentation]:https://www.geometrictools.com/Documentation/Documentation.html  
+[****Documentation****]:https://www.geometrictools.com/Documentation/Documentation.html  
 [Intersections of Lines, Segments and Planes (2D and 3D)]:https://web.archive.org/web/20110716101931/http://www.softsurfer.com/Archive/algorithm_0104/algorithm_0104B.htm  
 [DistanceBox3Cone3]:https://www.geometrictools.com/Documentation/DistanceBox3Cone3.pdf  
